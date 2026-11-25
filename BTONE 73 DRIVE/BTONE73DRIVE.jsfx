@@ -1,0 +1,659 @@
+desc:BTONE 73 DRIVE
+author:BTONE
+version:1.0.0
+tags:overdrive neve 1073 transformer saturation pedal
+options:no_meter
+
+slider1:slider_input=50<0,100,0.1>-INPUT
+slider2:slider_drive=30<0,100,0.1>-DRIVE
+slider3:slider_tone=50<0,100,0.1>-TONE
+slider4:slider_output=50<0,100,0.1>-OUTPUT
+slider5:slider_higain=0<0,1,1{OFF,ON}>-HI GAIN
+slider6:slider_bright=0<0,1,1{OFF,ON}>-BRIGHT
+slider7:slider_transformer=50<0,100,0.1>-TRANSFORMER
+slider8:slider_softclip=30<0,100,0.1>-SOFT CLIP
+slider9:slider_bypass=1<0,1,1{BYPASS,ENGAGED}>-BYPASS
+
+in_pin:Left Input
+in_pin:Right Input
+out_pin:Left Output
+out_pin:Right Output
+
+filename:0,BTONE73DRIVE_bg.png
+filename:1,BTONE73DRIVE_toggle_off.png
+filename:2,BTONE73DRIVE_toggle_on.png
+filename:3,BTONE73DRIVE_led_off.png
+filename:4,BTONE73DRIVE_ptr_input.png
+filename:5,BTONE73DRIVE_ptr_drive.png
+filename:6,BTONE73DRIVE_ptr_tone.png
+filename:7,BTONE73DRIVE_ptr_output.png
+filename:8,BTONE73DRIVE_ptr_transformer.png
+filename:9,BTONE73DRIVE_ptr_softclip.png
+filename:10,BTONE73DRIVE_knob_drive.png
+filename:11,BTONE73DRIVE_knob_strip.png
+filename:12,BTONE73DRIVE_knob_drive_strip.png
+filename:13,BTONE73DRIVE_light_on.png
+filename:14,BTONE73DRIVE_light_off.png
+filename:15,BTONE73DRIVE_switch_on.png
+filename:16,BTONE73DRIVE_switch_off.png
+filename:17,BTONE73DRIVE_button_up.png
+filename:18,BTONE73DRIVE_button_down.png
+
+@init
+ext_noinit = 1.0;
+
+PI = 3.14159265358979323846;
+TWO_PI = 6.28318530717958647692;
+srate_inv = 1.0 / srate;
+fade_len = max(1, floor(srate * 0.008));
+fade_step = 1.0 / fade_len;
+bypass_fade = slider_bypass > 0.5 ? 1.0 : 0.0;
+
+// Transformer states
+tr_hp_lpL = 0.0;
+tr_hp_lpR = 0.0;
+tr_body_lpL = 0.0;
+tr_body_lpR = 0.0;
+tr_hf_lpL = 0.0;
+tr_hf_lpR = 0.0;
+
+// Preamp / tone / soft clip states
+pre_dc_xL = 0.0; pre_dc_yL = 0.0;
+pre_dc_xR = 0.0; pre_dc_yR = 0.0;
+tone_lpL = 0.0; tone_lpR = 0.0;
+bright_lpL = 0.0; bright_lpR = 0.0;
+sc_dc_xL = 0.0; sc_dc_yL = 0.0;
+sc_dc_xR = 0.0; sc_dc_yR = 0.0;
+out_lpL = 0.0; out_lpR = 0.0;
+
+// Smoothed values
+sm_in_gain = 1.0;
+sm_pre_gain = 1.0;
+sm_tr_mix = 0.5;
+sm_tone_low = 1.0;
+sm_tone_high = 1.0;
+sm_bright = 0.0;
+sm_soft = 0.3;
+sm_out_gain = 1.0;
+sm_hi = 0.0;
+first_block = 1;
+
+// GUI state
+mouse_active = -1;
+mouse_btn_down = 0;
+mouse_y_start = 0;
+mouse_val_start = 0;
+last_click_time = 0.0;
+last_click_id = -1;
+mouse_rcap_prev = 0;
+footswitch_pressed = 0;
+hover_id = -1;
+hover_val = 0.0;
+hover_is_text = 0;
+hover_x = 0.0;
+hover_y = 0.0;
+#hover_label = "";
+
+function update_dsp_params()
+local(in_norm, in_db, drv_norm, hi, tone_n, tr_n, sc_n, out_n)
+(
+  in_norm = max(0.0, min(1.0, slider_input / 100.0));
+  in_db = (in_norm - 0.5) * 36.0;
+  in_gain_target = 10.0 ^ (in_db / 20.0);
+
+  hi = slider_higain ? 1.0 : 0.0;
+  hi_target = hi;
+  drv_norm = max(0.0, min(1.0, slider_drive / 100.0));
+  drive_db = (drv_norm ^ 1.35) * 42.0 + hi * 10.0;
+  pre_gain_target = 10.0 ^ (drive_db / 20.0);
+
+  tr_n = max(0.0, min(1.0, slider_transformer / 100.0));
+  tr_mix_target = tr_n;
+
+  tone_n = max(0.0, min(1.0, slider_tone / 100.0));
+  tone_low_target = 1.20 - tone_n * 0.40;
+  tone_high_target = 0.35 + tone_n * 1.30;
+  bright_target = slider_bright ? 0.55 : 0.0;
+
+  sc_n = max(0.0, min(1.0, slider_softclip / 100.0));
+  soft_target = sc_n;
+
+  out_n = max(0.0, min(1.0, slider_output / 100.0));
+  out_gain_target = (out_n ^ 2.0) * 3.2;
+
+  // Fixed filter coefficients
+  tr_hp_alpha = 1.0 - exp(-TWO_PI * 22.0 * srate_inv);
+  tr_body_alpha = 1.0 - exp(-TWO_PI * 110.0 * srate_inv);
+  tr_lp_alpha = 1.0 - exp(-TWO_PI * 13500.0 * srate_inv);
+  dc_coeff = exp(-TWO_PI * 18.0 * srate_inv);
+  tone_split_alpha = 1.0 - exp(-TWO_PI * 850.0 * srate_inv);
+  bright_alpha = 1.0 - exp(-TWO_PI * 5200.0 * srate_inv);
+  out_lp_alpha = 1.0 - exp(-TWO_PI * 18000.0 * srate_inv);
+  sm_coef = 1.0 - exp(-1.0 / (0.015 * srate));
+);
+
+@slider
+srate_inv = 1.0 / srate;
+fade_len = max(1, floor(srate * 0.008));
+fade_step = 1.0 / fade_len;
+update_dsp_params();
+
+@block
+srate_inv = 1.0 / srate;
+fade_len = max(1, floor(srate * 0.008));
+fade_step = 1.0 / fade_len;
+update_dsp_params();
+
+first_block ? (
+  sm_in_gain = in_gain_target;
+  sm_pre_gain = pre_gain_target;
+  sm_tr_mix = tr_mix_target;
+  sm_tone_low = tone_low_target;
+  sm_tone_high = tone_high_target;
+  sm_bright = bright_target;
+  sm_soft = soft_target;
+  sm_out_gain = out_gain_target;
+  sm_hi = hi_target;
+  bypass_fade = slider_bypass > 0.5 ? 1.0 : 0.0;
+  first_block = 0;
+);
+
+@sample
+bypass_on = slider_bypass > 0.5 ? 1.0 : 0.0;
+bypass_on ? (
+  bypass_fade < 1.0 ? bypass_fade = min(1.0, bypass_fade + fade_step);
+) : (
+  bypass_fade > 0.0 ? bypass_fade = max(0.0, bypass_fade - fade_step);
+);
+
+inL = spl0;
+inR = spl1;
+
+sm_in_gain += (in_gain_target - sm_in_gain) * sm_coef;
+sm_pre_gain += (pre_gain_target - sm_pre_gain) * sm_coef;
+sm_tr_mix += (tr_mix_target - sm_tr_mix) * sm_coef;
+sm_tone_low += (tone_low_target - sm_tone_low) * sm_coef;
+sm_tone_high += (tone_high_target - sm_tone_high) * sm_coef;
+sm_bright += (bright_target - sm_bright) * sm_coef;
+sm_soft += (soft_target - sm_soft) * sm_coef;
+sm_out_gain += (out_gain_target - sm_out_gain) * sm_coef;
+sm_hi += (hi_target - sm_hi) * sm_coef;
+
+bypass_fade > 0.0001 ? (
+  // ================= LEFT CHANNEL =================
+  tr_inL = inL * sm_in_gain;
+
+  tr_hp_lpL += tr_hp_alpha * (tr_inL - tr_hp_lpL);
+  tr_hpL = tr_inL - tr_hp_lpL;
+  tr_body_lpL += tr_body_alpha * (tr_hpL - tr_body_lpL);
+  tr_sigL = tr_hpL + tr_body_lpL * 0.16;
+  tr_hf_lpL += tr_lp_alpha * (tr_sigL - tr_hf_lpL);
+  tr_sigL = tr_hf_lpL;
+
+  tr_drv = 1.0 + sm_tr_mix * 0.90;
+  tr_xL = tr_sigL * tr_drv;
+  tr_xL >= 0.0 ? (
+    tr_colL = tr_xL / (1.0 + abs(tr_xL) * 0.85);
+  ) : (
+    tr_colL = tr_xL / (1.0 + abs(tr_xL) * 1.20);
+  );
+  tr_colL = tr_colL / tr_drv;
+  tr_colL += 0.025 * sm_tr_mix * (tr_colL * tr_colL - 0.08);
+  xL = tr_inL * (1.0 - sm_tr_mix) + tr_colL * sm_tr_mix;
+
+  pre_xL = xL * sm_pre_gain;
+  pre_xL >= 0.0 ? (
+    pre_yL = pre_xL / (1.0 + abs(pre_xL) * (0.85 - 0.10 * sm_hi));
+  ) : (
+    pre_yL = pre_xL / (1.0 + abs(pre_xL) * (1.05 + 0.10 * sm_hi));
+  );
+  pre_dc_yL = dc_coeff * (pre_dc_yL + pre_yL - pre_dc_xL);
+  pre_dc_xL = pre_yL;
+  pre_yL = pre_dc_yL;
+
+  tone_lpL += tone_split_alpha * (pre_yL - tone_lpL);
+  tone_hpL = pre_yL - tone_lpL;
+  tone_yL = tone_lpL * sm_tone_low + tone_hpL * sm_tone_high;
+  bright_lpL += bright_alpha * (tone_yL - bright_lpL);
+  tone_yL += (tone_yL - bright_lpL) * sm_bright;
+
+  sm_soft > 0.0001 ? (
+    soft_drv = 1.0 + sm_soft * 2.2;
+    sc_xL = tone_yL * soft_drv;
+    sc_xL >= 0.0 ? (
+      sc_yL = sc_xL / (1.0 + abs(sc_xL) * 0.70);
+    ) : (
+      sc_yL = sc_xL / (1.0 + abs(sc_xL) * 0.95);
+    );
+    sc_yL = (sc_yL / soft_drv) * (1.0 + sm_soft * 0.10);
+    tone_yL = tone_yL * (1.0 - sm_soft) + sc_yL * sm_soft;
+    sc_dc_yL = dc_coeff * (sc_dc_yL + tone_yL - sc_dc_xL);
+    sc_dc_xL = tone_yL;
+    tone_yL = sc_dc_yL;
+  );
+
+  outL = tone_yL * sm_out_gain;
+  out_lpL += out_lp_alpha * (outL - out_lpL);
+  outL = out_lpL;
+  spl0 = inL * (1.0 - bypass_fade) + outL * bypass_fade;
+
+  // ================= RIGHT CHANNEL =================
+  tr_inR = inR * sm_in_gain;
+
+  tr_hp_lpR += tr_hp_alpha * (tr_inR - tr_hp_lpR);
+  tr_hpR = tr_inR - tr_hp_lpR;
+  tr_body_lpR += tr_body_alpha * (tr_hpR - tr_body_lpR);
+  tr_sigR = tr_hpR + tr_body_lpR * 0.16;
+  tr_hf_lpR += tr_lp_alpha * (tr_sigR - tr_hf_lpR);
+  tr_sigR = tr_hf_lpR;
+
+  tr_xR = tr_sigR * tr_drv;
+  tr_xR >= 0.0 ? (
+    tr_colR = tr_xR / (1.0 + abs(tr_xR) * 0.85);
+  ) : (
+    tr_colR = tr_xR / (1.0 + abs(tr_xR) * 1.20);
+  );
+  tr_colR = tr_colR / tr_drv;
+  tr_colR += 0.025 * sm_tr_mix * (tr_colR * tr_colR - 0.08);
+  xR = tr_inR * (1.0 - sm_tr_mix) + tr_colR * sm_tr_mix;
+
+  pre_xR = xR * sm_pre_gain;
+  pre_xR >= 0.0 ? (
+    pre_yR = pre_xR / (1.0 + abs(pre_xR) * (0.85 - 0.10 * sm_hi));
+  ) : (
+    pre_yR = pre_xR / (1.0 + abs(pre_xR) * (1.05 + 0.10 * sm_hi));
+  );
+  pre_dc_yR = dc_coeff * (pre_dc_yR + pre_yR - pre_dc_xR);
+  pre_dc_xR = pre_yR;
+  pre_yR = pre_dc_yR;
+
+  tone_lpR += tone_split_alpha * (pre_yR - tone_lpR);
+  tone_hpR = pre_yR - tone_lpR;
+  tone_yR = tone_lpR * sm_tone_low + tone_hpR * sm_tone_high;
+  bright_lpR += bright_alpha * (tone_yR - bright_lpR);
+  tone_yR += (tone_yR - bright_lpR) * sm_bright;
+
+  sm_soft > 0.0001 ? (
+    sc_xR = tone_yR * soft_drv;
+    sc_xR >= 0.0 ? (
+      sc_yR = sc_xR / (1.0 + abs(sc_xR) * 0.70);
+    ) : (
+      sc_yR = sc_xR / (1.0 + abs(sc_xR) * 0.95);
+    );
+    sc_yR = (sc_yR / soft_drv) * (1.0 + sm_soft * 0.10);
+    tone_yR = tone_yR * (1.0 - sm_soft) + sc_yR * sm_soft;
+    sc_dc_yR = dc_coeff * (sc_dc_yR + tone_yR - sc_dc_xR);
+    sc_dc_xR = tone_yR;
+    tone_yR = sc_dc_yR;
+  );
+
+  outR = tone_yR * sm_out_gain;
+  out_lpR += out_lp_alpha * (outR - out_lpR);
+  outR = out_lpR;
+  spl1 = inR * (1.0 - bypass_fade) + outR * bypass_fade;
+) : (
+  spl0 = inL;
+  spl1 = inR;
+);
+
+// ============================================================================
+// GRAPHICS
+// ============================================================================
+@gfx 960 640
+
+IMG_W = 1536.0;
+IMG_H = 1024.0;
+
+// Reset transient mouse state when the button is released.
+!(mouse_cap & 1) ? (
+  mouse_active = -1;
+  mouse_btn_down = 0;
+  footswitch_pressed = 0;
+);
+
+// Fit the 3:2 artwork into the available graphics area, letterboxing if needed.
+gui_scale = min(gfx_w / IMG_W, gfx_h / IMG_H);
+gui_w = IMG_W * gui_scale;
+gui_h = IMG_H * gui_scale;
+gui_ox = (gfx_w - gui_w) * 0.5;
+gui_oy = (gfx_h - gui_h) * 0.5;
+mx_img = (mouse_x - gui_ox) / gui_scale;
+my_img = (mouse_y - gui_oy) / gui_scale;
+
+hover_id = -1;
+hover_is_text = 0;
+#hover_label = "";
+
+function img_x(ix) ( gui_ox + ix * gui_scale; );
+function img_y(iy) ( gui_oy + iy * gui_scale; );
+
+function set_color(r, g, b, a) (
+  gfx_r = r; gfx_g = g; gfx_b = b; gfx_a = a;
+);
+
+function clamp01(v) (
+  max(0.0, min(1.0, v));
+);
+
+function dist2(x1, y1, x2, y2) (
+  sqr(x1 - x2) + sqr(y1 - y2);
+);
+
+function draw_knob(id, cx, cy, strip_slot, diameter, hit_r, val, def_val, label, ptr_slot, ptr_half)
+local(norm, hit, dval, step, ang, frame, kw, kh, dx, dy, dw, dh)
+(
+  norm = clamp01(val / 100.0);
+  hit = dist2(mx_img, my_img, cx, cy) <= sqr(hit_r);
+
+  // Right-click reset
+  (mouse_cap & 2) && (mouse_rcap_prev == 0) && hit ? (
+    val = def_val;
+    norm = clamp01(val / 100.0);
+    mouse_active = -1;
+  );
+
+  // Left click / double-click reset
+  (mouse_cap & 1) && hit && mouse_active == -1 ? (
+    mouse_active = id;
+    mouse_y_start = my_img;
+    mouse_val_start = norm;
+    (time_precise() - last_click_time < 0.25 && last_click_id == id) ? (
+      val = def_val;
+      norm = clamp01(val / 100.0);
+      mouse_val_start = norm;
+    );
+    last_click_time = time_precise();
+    last_click_id = id;
+  );
+
+  // Vertical drag
+  mouse_active == id ? (
+    (mouse_cap & 1) ? (
+      dval = (mouse_y_start - my_img) / 260.0;
+      (mouse_cap & 8) ? dval *= 0.2;
+      norm = clamp01(mouse_val_start + dval);
+      val = norm * 100.0;
+    ) : (
+      mouse_active = -1;
+    );
+  );
+
+  // Wheel
+  hit && mouse_wheel != 0 ? (
+    step = (mouse_wheel / 120.0) * 0.025;
+    (mouse_cap & 8) ? step *= 0.2;
+    norm = clamp01(norm + step);
+    val = norm * 100.0;
+    mouse_wheel = 0;
+  );
+
+  // New art: a vertical strip of 101 frames, each exactly 110x110 px.
+  // Frame 0 = -112.5 deg, frame 50 = 12 o'clock, frame 100 = +112.5 deg.
+  kw = 0.0; kh = 0.0;
+  strip_slot >= 0 ? (
+    gfx_getimgdim(strip_slot, kw, kh);
+  );
+  (kw >= 110.0 && kh >= 11110.0) ? (
+    frame = floor(norm * 100.0 + 0.5);
+    frame = max(0, min(100, frame));
+    dx = floor(img_x(cx - diameter * 0.5));
+    dy = floor(img_y(cy - diameter * 0.5));
+    dw = floor(diameter * gui_scale + 0.5);
+    dh = floor(diameter * gui_scale + 0.5);
+    gfx_a = 1.0;
+    gfx_mode = 0;
+    gfx_blit(strip_slot, 1.0, 0, 0, frame * 110.0, 110.0, 110.0, dx, dy, dw, dh);
+  ) : (
+    // Fallback: old pointer sprite over the old knob face.
+    ang = (-112.5 + norm * 225.0) * PI / 180.0;
+    gfx_x = img_x(cx - ptr_half);
+    gfx_y = img_y(cy - ptr_half);
+    gfx_a = 1.0;
+    gfx_mode = 0;
+    gfx_blit(ptr_slot, gui_scale, ang);
+  );
+
+  // Keep the readout alive while dragging, even if the pointer leaves the knob.
+  (mouse_active == id) || (mouse_active == -1 && hit) ? (
+    hover_id = id;
+    hover_val = val;
+    hover_is_text = 0;
+    #hover_label = label;
+    hover_x = cx;
+    hover_y = cy;
+  );
+
+  val;
+);
+
+function draw_toggle(cx, state, label)
+local(hit, slot, kw, kh, sw_img, dx, dy, dw, dh, ok)
+(
+  hit = (abs(mx_img - cx) < 78.0 && abs(my_img - 487.0) < 52.0);
+
+  (mouse_cap & 1) && hit && mouse_btn_down == 0 && mouse_active == -1 ? (
+    mouse_btn_down = 1;
+    state = 1 - state;
+  );
+
+  // New switch sprites: bezel centre is (260,180), source bezel diameter 334 px.
+  // Target bezel diameter is 76 px; ON points right, OFF points left.
+  ok = 0;
+  slot = state ? 15 : 16;
+  gfx_getimgdim(slot, kw, kh);
+  (kw > 0.0 && kh > 0.0) ? (
+    ok = 1;
+    sw_img = 76.0 / 334.0;
+    dx = floor(img_x(cx - 260.0 * sw_img));
+    dy = floor(img_y(487.0 - 180.0 * sw_img));
+    dw = floor(kw * sw_img * gui_scale + 0.5);
+    dh = floor(kh * sw_img * gui_scale + 0.5);
+    gfx_a = 1.0;
+    gfx_mode = 0;
+    gfx_blit(slot, 1.0, 0, 0, 0, kw, kh, dx, dy, dw, dh);
+  );
+  !ok ? (
+    slot = state ? 2 : 1;
+    gfx_x = img_x(cx - 62.0);
+    gfx_y = img_y(487.0 - 62.0);
+    gfx_a = 1.0;
+    gfx_mode = 0;
+    gfx_blit(slot, gui_scale, 0);
+  );
+
+  // Hover label only; the OFF/ON legend already shows the state.
+  (mouse_active == -1 && hit) ? (
+    hover_id = 10 + (cx > 800.0 ? 1 : 0);
+    hover_is_text = 1;
+    #hover_label = label;
+    hover_x = cx;
+    hover_y = 487.0;
+  );
+
+  state;
+);
+
+function draw_status_led()
+local(slot, kw, kh, dx, dy, dw, dh)
+(
+  slot = slider_bypass ? 13 : 14;
+  gfx_getimgdim(slot, kw, kh);
+  (kw > 0.0 && kh > 0.0) ? (
+    dx = floor(img_x(765.0 - 40.0));
+    dy = floor(img_y(487.0 - 40.0));
+    dw = floor(80.0 * gui_scale + 0.5);
+    dh = floor(80.0 * gui_scale + 0.5);
+    gfx_a = 1.0;
+    gfx_mode = 0;
+    gfx_blit(slot, 1.0, 0, 0, 0, kw, kh, dx, dy, dw, dh);
+  ) : (
+    // Old artwork has the lit LED baked in; darken it while bypassed.
+    !slider_bypass ? (
+      gfx_x = img_x(765.0 - 65.0);
+      gfx_y = img_y(487.0 - 65.0);
+      gfx_a = 1.0;
+      gfx_mode = 0;
+      gfx_blit(3, gui_scale, 0);
+    );
+  );
+);
+
+function draw_footswitch(down)
+local(slot, kw, kh, dx, dy, dw, dh, cx, cy)
+(
+  slot = down ? 18 : 17;
+  gfx_getimgdim(slot, kw, kh);
+  (kw > 0.0 && kh > 0.0) ? (
+    dx = floor(img_x(760.0 - 75.0));
+    dy = floor(img_y(848.0 - 75.0));
+    dw = floor(150.0 * gui_scale + 0.5);
+    dh = floor(150.0 * gui_scale + 0.5);
+    gfx_a = 1.0;
+    gfx_mode = 0;
+    gfx_blit(slot, 1.0, 0, 0, 0, kw, kh, dx, dy, dw, dh);
+  ) : (
+    // Old background still contains the footswitch; just darken it while pressed.
+    down ? (
+      cx = img_x(760.0);
+      cy = img_y(848.0);
+      set_color(0.0, 0.0, 0.0, 0.24);
+      gfx_circle(cx, cy, 52.0 * gui_scale, 1);
+      set_color(0.90, 0.86, 0.75, 0.06);
+      gfx_circle(cx - 3.0 * gui_scale, cy - 4.0 * gui_scale, 38.0 * gui_scale, 1);
+    );
+  );
+);
+
+function draw_tooltip()
+local(lw, lh, vw, vh, tw, th, bw, bh, tx, ty, fs)
+(
+  fs = max(10, floor(13.0 * gui_scale / 0.625 + 0.5));
+  gfx_setfont(1, "DejaVu Sans", fs, 'b');
+
+  gfx_measurestr(#hover_label, lw, lh);
+  hover_is_text ? (
+    tw = lw;
+    th = lh;
+  ) : (
+    #tt_value = "";
+    sprintf(#tt_value, "%.0f", hover_val);
+    gfx_measurestr(#tt_value, vw, vh);
+    tw = lw + 10.0 + vw;
+    th = max(lh, vh);
+  );
+  bw = tw + 18.0;
+  bh = th + 10.0;
+
+  tx = min(max(6.0, mouse_x + 14.0), gfx_w - bw - 6.0);
+  ty = min(max(6.0, mouse_y + 18.0), gfx_h - bh - 6.0);
+
+  set_color(0.020, 0.024, 0.028, 0.90);
+  gfx_roundrect(tx, ty, bw, bh, 5.0, 1);
+  set_color(0.52, 0.47, 0.36, 0.55);
+  gfx_roundrect(tx + 1.0, ty + 1.0, bw - 2.0, bh - 2.0, 4.0, 1);
+  set_color(0.018, 0.022, 0.026, 0.96);
+  gfx_roundrect(tx + 2.0, ty + 2.0, bw - 4.0, bh - 4.0, 3.0, 1);
+
+  set_color(0.93, 0.90, 0.81, 0.98);
+  gfx_x = tx + 9.0;
+  gfx_y = ty + (bh - lh) * 0.5;
+  gfx_drawstr(#hover_label);
+
+  !hover_is_text ? (
+    set_color(0.72, 0.68, 0.57, 0.98);
+    gfx_x = tx + 9.0 + lw + 10.0;
+    gfx_y = ty + (bh - vh) * 0.5;
+    gfx_drawstr(#tt_value);
+  );
+);
+
+// ============================================================================
+// MAIN COMPOSITION
+// ============================================================================
+
+gfx_set(0.0, 0.0, 0.0, 1.0);
+gfx_rect(0, 0, gfx_w, gfx_h);
+
+gfx_getimgdim(0, bg_w, bg_h);
+bg_w > 0.0 ? (
+  gfx_x = gui_ox;
+  gfx_y = gui_oy;
+  gfx_a = 1.0;
+  gfx_mode = 0;
+  gfx_blit(0, gui_scale, 0);
+) : (
+  gfx_set(0.055, 0.045, 0.035, 1.0);
+  gfx_rect(0, 0, gfx_w, gfx_h);
+  gfx_setfont(1, "DejaVu Sans", 16, 'b');
+  set_color(0.88, 0.84, 0.74, 1.0);
+  gfx_x = 22.0;
+  gfx_y = 22.0;
+  gfx_drawstr("BTONE 73 DRIVE  -  missing GUI assets");
+);
+
+// Toggles are photo sprites composited over a clean chassis base.
+gui_old = slider_bright;
+slider_bright = draw_toggle(596.0, slider_bright, "BRIGHT");
+slider_bright != gui_old ? sliderchange(slider_bright);
+
+gui_old = slider_higain;
+slider_higain = draw_toggle(935.0, slider_higain, "HI GAIN");
+slider_higain != gui_old ? sliderchange(slider_higain);
+
+// Footswitch (bypass), processed before the LED so the light updates immediately.
+fs_hit = dist2(mx_img, my_img, 760.0, 848.0) <= sqr(80.0);
+(mouse_cap & 1) && fs_hit && mouse_btn_down == 0 && mouse_active == -1 ? (
+  mouse_btn_down = 1;
+  footswitch_pressed = 1;
+  slider_bypass = 1 - slider_bypass;
+  sliderchange(slider_bypass);
+);
+
+// Status LED (lit artwork when engaged, dark jewel sprite when bypassed).
+draw_status_led();
+
+// Main knobs
+gui_old = slider_input;
+slider_input = draw_knob(1, 287.0, 236.0, 11, 228.0, 118.0, slider_input, 50.0, "INPUT", 4, 88.0);
+slider_input != gui_old ? sliderchange(slider_input);
+
+gui_old = slider_drive;
+slider_drive = draw_knob(2, 609.0, 235.0, 11, 228.0, 118.0, slider_drive, 30.0, "DRIVE", 5, 88.0);
+slider_drive != gui_old ? sliderchange(slider_drive);
+
+gui_old = slider_tone;
+slider_tone = draw_knob(3, 933.0, 237.0, 11, 228.0, 118.0, slider_tone, 50.0, "TONE", 6, 88.0);
+slider_tone != gui_old ? sliderchange(slider_tone);
+
+gui_old = slider_output;
+slider_output = draw_knob(4, 1251.0, 234.0, 11, 228.0, 118.0, slider_output, 50.0, "OUTPUT", 7, 88.0);
+slider_output != gui_old ? sliderchange(slider_output);
+
+// Secondary knobs
+gui_old = slider_transformer;
+slider_transformer = draw_knob(5, 284.0, 532.0, 11, 160.0, 85.0, slider_transformer, 50.0, "TRANSFORMER", 8, 64.0);
+slider_transformer != gui_old ? sliderchange(slider_transformer);
+
+gui_old = slider_softclip;
+slider_softclip = draw_knob(6, 1253.0, 531.0, 11, 160.0, 85.0, slider_softclip, 30.0, "SOFT CLIP", 9, 64.0);
+slider_softclip != gui_old ? sliderchange(slider_softclip);
+
+// Footswitch state and hover status.
+draw_footswitch(footswitch_pressed);
+(mouse_active == -1 && fs_hit) ? (
+  hover_id = 20;
+  hover_is_text = 1;
+  slider_bypass ? (
+    #hover_label = "ENGAGED";
+  ) : (
+    #hover_label = "BYPASS";
+  );
+  hover_x = 760.0;
+  hover_y = 848.0;
+);
+
+// Hover readout
+hover_id >= 0 ? draw_tooltip();
+
+mouse_wheel = 0;
+mouse_rcap_prev = mouse_cap & 2;

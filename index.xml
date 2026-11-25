@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<reapack>
+  <name>BTONE Effects</name>
+  <mainurl>https://github.com/btonedev-coder/BTONE/raw/main/</mainurl>
+  <description>BTONE Guitar Effects Collection for Reaper</description>
+  <author>BTONE (Bryan Durán Badilla)</author>
+  <email>bryandev1986@gmail.com</email>
+  <effects>
+    <effect>
+      <name>BTONE - Tronboard (Multi-FX & Amp Modeler)</name>
+      <author>BTONE</author>
+      <version>1.0.0</version>
+      <description>Complete multi-FX pedalboard with amp modeling, cabinets, delays, reverbs, modulation, dynamics, and chromatic tuner. 46 effects across 6 categories in a serial signal chain with 12 slots.</description>
+      <tags>guitar multi-fx amp cab distortion overdrive modulation delay reverb tuner</tags>
+      <file>BTONE - Tronboard/tronboard.jsfx</file>
+      <changelog>Initial release</changelog>
+    </effect>
+    <effect>
+      <name>BTONE 73 DRIVE</name>
+      <author>BTONE</author>
+      <version>1.0.0</version>
+      <description>Neve 1073-style preamp/overdrive with transformer emulation, tilt EQ, soft clipping, and Hi-Gain/Bright switches. Authentic British console coloration in a pedal format.</description>
+      <tags>overdrive neve 1073 transformer saturation pedal</tags>
+      <file>BTONE 73 DRIVE/BTONE73DRIVE.jsfx</file>
+      <changelog>Initial release</changelog>
+    </effect>
+  </effects>
+</reapack>
